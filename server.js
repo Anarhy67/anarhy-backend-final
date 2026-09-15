@@ -6,7 +6,22 @@ const Database = require("better-sqlite3");
 
 const app = express();
 
-app.use(cors());
+/* CORS */
+app.use(
+  cors({
+    origin: [
+      "https://anarhytiktok.netlify.app",
+      "http://localhost:3000",
+      "http://localhost:5173"
+    ],
+    methods: ["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+    credentials: false
+  })
+);
+
+app.options("*", cors());
+
 app.use(express.json({ limit: "5mb" }));
 
 const PORT = process.env.PORT || 3000;
@@ -124,6 +139,8 @@ function publicUser(user) {
   };
 }
 
+/* BASIC */
+
 app.get("/", (req, res) => {
   res.json({
     ok: true,
@@ -143,12 +160,16 @@ app.get("/api/health", (req, res) => {
 
 app.post("/api/auth/register", async (req, res) => {
   try {
-    const { username, email, password } = req.body;
+    const username = String(req.body.username || "").trim();
+    const email = String(
+      req.body.email || `${username}@anarhy.local`
+    ).trim();
+    const password = String(req.body.password || "");
 
-    if (!username || !email || !password) {
+    if (!username || !password) {
       return res.status(400).json({
         ok: false,
-        error: "Заполни username, email и password"
+        error: "Заполни username и password"
       });
     }
 
@@ -184,13 +205,15 @@ app.post("/api/auth/register", async (req, res) => {
       .prepare("SELECT * FROM users WHERE id = ?")
       .get(result.lastInsertRowid);
 
-    res.status(201).json({
+    return res.status(201).json({
       ok: true,
       token: createToken(user),
       user: publicUser(user)
     });
   } catch (error) {
-    res.status(500).json({
+    console.error("REGISTER ERROR:", error);
+
+    return res.status(500).json({
       ok: false,
       error: "Ошибка регистрации"
     });
@@ -199,7 +222,14 @@ app.post("/api/auth/register", async (req, res) => {
 
 app.post("/api/auth/login", async (req, res) => {
   try {
-    const { login, password } = req.body;
+    const login = String(
+      req.body.login ||
+      req.body.username ||
+      req.body.email ||
+      ""
+    ).trim();
+
+    const password = String(req.body.password || "");
 
     if (!login || !password) {
       return res.status(400).json({
@@ -222,7 +252,10 @@ app.post("/api/auth/login", async (req, res) => {
       });
     }
 
-    const valid = await bcrypt.compare(password, user.password_hash);
+    const valid = await bcrypt.compare(
+      password,
+      user.password_hash
+    );
 
     if (!valid) {
       return res.status(401).json({
@@ -238,13 +271,15 @@ app.post("/api/auth/login", async (req, res) => {
       });
     }
 
-    res.json({
+    return res.json({
       ok: true,
       token: createToken(user),
       user: publicUser(user)
     });
-  } catch {
-    res.status(500).json({
+  } catch (error) {
+    console.error("LOGIN ERROR:", error);
+
+    return res.status(500).json({
       ok: false,
       error: "Ошибка входа"
     });
@@ -263,7 +298,7 @@ app.get("/api/me", auth, (req, res) => {
     });
   }
 
-  res.json({
+  return res.json({
     ok: true,
     user: publicUser(user)
   });
@@ -290,7 +325,7 @@ app.get("/api/tasks", auth, (req, res) => {
     `)
     .all(req.user.id);
 
-  res.json({
+  return res.json({
     ok: true,
     tasks
   });
@@ -298,7 +333,8 @@ app.get("/api/tasks", auth, (req, res) => {
 
 app.post("/api/tasks/:id/submit", auth, (req, res) => {
   const taskId = Number(req.params.id);
-  const { tiktok_url, note } = req.body;
+  const tiktok_url = String(req.body.tiktok_url || "").trim();
+  const note = String(req.body.note || "");
 
   if (!tiktok_url) {
     return res.status(400).json({
@@ -338,9 +374,14 @@ app.post("/api/tasks/:id/submit", auth, (req, res) => {
       (task_id, user_id, tiktok_url, note)
       VALUES (?, ?, ?, ?)
     `)
-    .run(taskId, req.user.id, tiktok_url, note || "");
+    .run(
+      taskId,
+      req.user.id,
+      tiktok_url,
+      note
+    );
 
-  res.status(201).json({
+  return res.status(201).json({
     ok: true,
     submission_id: result.lastInsertRowid,
     message: "Отчёт отправлен на проверку"
@@ -361,7 +402,7 @@ app.get("/api/submissions/me", auth, (req, res) => {
     `)
     .all(req.user.id);
 
-  res.json({
+  return res.json({
     ok: true,
     submissions
   });
@@ -381,7 +422,7 @@ app.get("/api/leaderboard", auth, (req, res) => {
     `)
     .all();
 
-  res.json({
+  return res.json({
     ok: true,
     leaderboard: users.map((user, index) => ({
       place: index + 1,
@@ -410,7 +451,7 @@ app.get("/api/admin/stats", auth, adminOnly, (req, res) => {
     `)
     .get().count;
 
-  res.json({
+  return res.json({
     ok: true,
     stats: {
       users,
@@ -430,14 +471,17 @@ app.get("/api/admin/users", auth, adminOnly, (req, res) => {
     `)
     .all();
 
-  res.json({
+  return res.json({
     ok: true,
     users: users.map(publicUser)
   });
 });
 
 app.post("/api/admin/tasks", auth, adminOnly, (req, res) => {
-  const { title, description, xp, deadline } = req.body;
+  const title = String(req.body.title || "").trim();
+  const description = String(req.body.description || "").trim();
+  const xp = Number(req.body.xp) || 100;
+  const deadline = String(req.body.deadline || "22:00");
 
   if (!title || !description) {
     return res.status(400).json({
@@ -455,11 +499,11 @@ app.post("/api/admin/tasks", auth, adminOnly, (req, res) => {
     .run(
       title,
       description,
-      Number(xp) || 100,
-      deadline || "22:00"
+      xp,
+      deadline
     );
 
-  res.status(201).json({
+  return res.status(201).json({
     ok: true,
     task_id: result.lastInsertRowid
   });
@@ -483,7 +527,7 @@ app.get("/api/admin/submissions", auth, adminOnly, (req, res) => {
     `)
     .all();
 
-  res.json({
+  return res.json({
     ok: true,
     submissions
   });
@@ -495,7 +539,10 @@ app.patch(
   adminOnly,
   (req, res) => {
     const submissionId = Number(req.params.id);
-    const { status, admin_comment } = req.body;
+    const status = req.body.status;
+    const admin_comment = String(
+      req.body.admin_comment || ""
+    );
 
     if (!["approved", "rejected"].includes(status)) {
       return res.status(400).json({
@@ -527,6 +574,27 @@ app.patch(
       });
     }
 
+    const user = db
+      .prepare("SELECT * FROM users WHERE id = ?")
+      .get(submission.user_id);
+
+    if (!user) {
+      return res.status(404).json({
+        ok: false,
+        error: "Пользователь не найден"
+      });
+    }
+
+    const xpAward =
+      status === "approved"
+        ? submission.task_xp
+        : 0;
+
+    const strikes =
+      status === "rejected"
+        ? Math.min(user.strikes + 1, 3)
+        : user.strikes;
+
     const updateSubmission = db.prepare(`
       UPDATE submissions
       SET status = ?,
@@ -543,19 +611,10 @@ app.patch(
       WHERE id = ?
     `);
 
-    const user = db
-      .prepare("SELECT * FROM users WHERE id = ?")
-      .get(submission.user_id);
-
-    const xpAward = status === "approved" ? submission.task_xp : 0;
-    const strikes = status === "rejected"
-      ? Math.min(user.strikes + 1, 3)
-      : user.strikes;
-
     const transaction = db.transaction(() => {
       updateSubmission.run(
         status,
-        admin_comment || "",
+        admin_comment,
         xpAward,
         submissionId
       );
@@ -569,56 +628,73 @@ app.patch(
 
     transaction();
 
-    res.json({
+    return res.json({
       ok: true,
-      message: status === "approved"
-        ? "Отчёт одобрен, XP начислен"
-        : "Отчёт отклонён, strike начислен"
+      message:
+        status === "approved"
+          ? "Отчёт одобрен, XP начислен"
+          : "Отчёт отклонён, strike начислен"
     });
   }
 );
 
-app.patch("/api/admin/users/:id", auth, adminOnly, (req, res) => {
-  const userId = Number(req.params.id);
-  const { status, role } = req.body;
+app.patch(
+  "/api/admin/users/:id",
+  auth,
+  adminOnly,
+  (req, res) => {
+    const userId = Number(req.params.id);
+    const status = req.body.status;
+    const role = req.body.role;
 
-  const user = db
-    .prepare("SELECT * FROM users WHERE id = ?")
-    .get(userId);
+    const user = db
+      .prepare("SELECT * FROM users WHERE id = ?")
+      .get(userId);
 
-  if (!user) {
-    return res.status(404).json({
-      ok: false,
-      error: "Пользователь не найден"
+    if (!user) {
+      return res.status(404).json({
+        ok: false,
+        error: "Пользователь не найден"
+      });
+    }
+
+    if (
+      status &&
+      !["active", "blocked", "pending"].includes(status)
+    ) {
+      return res.status(400).json({
+        ok: false,
+        error: "Недопустимый статус"
+      });
+    }
+
+    if (
+      role &&
+      !["member", "admin"].includes(role)
+    ) {
+      return res.status(400).json({
+        ok: false,
+        error: "Недопустимая роль"
+      });
+    }
+
+    db.prepare(`
+      UPDATE users
+      SET status = COALESCE(?, status),
+          role = COALESCE(?, role)
+      WHERE id = ?
+    `).run(
+      status || null,
+      role || null,
+      userId
+    );
+
+    return res.json({
+      ok: true,
+      message: "Пользователь обновлён"
     });
   }
-
-  if (status && !["active", "blocked", "pending"].includes(status)) {
-    return res.status(400).json({
-      ok: false,
-      error: "Недопустимый статус"
-    });
-  }
-
-  if (role && !["member", "admin"].includes(role)) {
-    return res.status(400).json({
-      ok: false,
-      error: "Недопустимая роль"
-    });
-  }
-
-  db.prepare(`
-    UPDATE users
-    SET status = COALESCE(?, status),
-        role = COALESCE(?, role)
-    WHERE id = ?
-  `).run(status || null, role || null, userId);
-
-  res.json({
-    ok: true,
-    message: "Пользователь обновлён"
-  });
-});
+);
 
 /* BOOTSTRAP ADMIN */
 
@@ -627,7 +703,9 @@ async function ensureAdmin() {
   const adminPassword = process.env.ADMIN_PASSWORD;
 
   if (!adminUsername || !adminPassword) {
-    console.log("ADMIN_USERNAME / ADMIN_PASSWORD не заданы");
+    console.log(
+      "ADMIN_USERNAME / ADMIN_PASSWORD не заданы"
+    );
     return;
   }
 
@@ -636,7 +714,10 @@ async function ensureAdmin() {
     .get(adminUsername);
 
   if (!existing) {
-    const passwordHash = await bcrypt.hash(adminPassword, 10);
+    const passwordHash = await bcrypt.hash(
+      adminPassword,
+      10
+    );
 
     db.prepare(`
       INSERT INTO users
@@ -655,7 +736,9 @@ async function ensureAdmin() {
 ensureAdmin()
   .then(() => {
     app.listen(PORT, "0.0.0.0", () => {
-      console.log(`ANARHY TikTok OS running on port ${PORT}`);
+      console.log(
+        `ANARHY TikTok OS running on port ${PORT}`
+      );
     });
   })
   .catch((error) => {
