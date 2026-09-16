@@ -6,106 +6,204 @@ const Database = require("better-sqlite3");
 
 const app = express();
 
-/* CORS */
+const PORT = process.env.PORT || 10000;
+const JWT_SECRET =
+  process.env.JWT_SECRET || "anarhy-development-secret-change-later";
+
+const FRONTEND_URL =
+  process.env.FRONTEND_URL || "https://anarhytiktok9.netlify.app";
+
 app.use(
   cors({
-    origin: [
-      "https://anarhytiktok.netlify.app",
-      "http://localhost:3000",
-      "http://localhost:5173"
-    ],
-    methods: ["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization"],
-    credentials: false
+    origin: true,
+    credentials: true
   })
 );
 
-app.options("*", cors());
+app.use(express.json({ limit: "2mb" }));
 
-app.use(express.json({ limit: "5mb" }));
+// --------------------------------------------------
+// DATABASE
+// --------------------------------------------------
 
-const PORT = process.env.PORT || 3000;
-const SECRET = process.env.JWT_SECRET || "change-this-secret";
-
-const db = new Database(process.env.DB_FILE || "anarhy.db");
+const db = new Database("anarhy.sqlite");
 
 db.pragma("journal_mode = WAL");
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    username TEXT UNIQUE NOT NULL,
-    email TEXT UNIQUE NOT NULL,
-    password_hash TEXT NOT NULL,
-    role TEXT NOT NULL DEFAULT 'member',
-    status TEXT NOT NULL DEFAULT 'active',
+    name TEXT NOT NULL,
+    nickname TEXT NOT NULL UNIQUE,
+    email TEXT NOT NULL UNIQUE,
+    password TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'user',
+    avatar TEXT DEFAULT '',
+    about TEXT DEFAULT '',
     xp INTEGER NOT NULL DEFAULT 0,
-    strikes INTEGER NOT NULL DEFAULT 0,
-    streak INTEGER NOT NULL DEFAULT 0,
+    level TEXT NOT NULL DEFAULT 'Rookie',
+    penalties INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'active',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   );
 
   CREATE TABLE IF NOT EXISTS tasks (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     title TEXT NOT NULL,
-    description TEXT NOT NULL,
-    xp INTEGER NOT NULL DEFAULT 100,
+    description TEXT DEFAULT '',
+    videos_required INTEGER NOT NULL DEFAULT 3,
     deadline TEXT NOT NULL DEFAULT '22:00',
+    xp_reward INTEGER NOT NULL DEFAULT 120,
     active INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   );
 
-  CREATE TABLE IF NOT EXISTS submissions (
+  CREATE TABLE IF NOT EXISTS reports (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    task_id INTEGER NOT NULL,
     user_id INTEGER NOT NULL,
-    tiktok_url TEXT NOT NULL,
-    note TEXT,
+    task_id INTEGER,
+    video_url TEXT DEFAULT '',
+    text TEXT DEFAULT '',
     status TEXT NOT NULL DEFAULT 'pending',
-    admin_comment TEXT,
-    xp_awarded INTEGER NOT NULL DEFAULT 0,
+    xp_reward INTEGER NOT NULL DEFAULT 40,
+    report_date TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    reviewed_at TEXT,
-    UNIQUE(task_id, user_id),
-    FOREIGN KEY(task_id) REFERENCES tasks(id),
-    FOREIGN KEY(user_id) REFERENCES users(id)
+    FOREIGN KEY (user_id) REFERENCES users(id),
+    FOREIGN KEY (task_id) REFERENCES tasks(id)
   );
 `);
 
-function levelFromXp(xp) {
-  if (xp >= 3000) return "Elite";
-  if (xp >= 1000) return "Pro";
-  return "Rookie";
+// --------------------------------------------------
+// DEFAULT DATA
+// --------------------------------------------------
+
+const taskCount = db
+  .prepare("SELECT COUNT(*) AS count FROM tasks")
+  .get().count;
+
+if (taskCount === 0) {
+  db.prepare(`
+    INSERT INTO tasks
+    (title, description, videos_required, deadline, xp_reward, active)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(
+    "Нарезка #01",
+    "Опубликуй TikTok-ролик и отправь ссылку на опубликованное видео.",
+    3,
+    "22:00",
+    40,
+    1
+  );
+
+  db.prepare(`
+    INSERT INTO tasks
+    (title, description, videos_required, deadline, xp_reward, active)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(
+    "Нарезка #02",
+    "Подготовь второй ролик по заданию команды.",
+    3,
+    "22:00",
+    40,
+    1
+  );
+
+  db.prepare(`
+    INSERT INTO tasks
+    (title, description, videos_required, deadline, xp_reward, active)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(
+    "Нарезка #03",
+    "Подготовь третий ролик и отправь отчёт.",
+    3,
+    "22:00",
+    40,
+    1
+  );
 }
+
+// --------------------------------------------------
+// HELPERS
+// --------------------------------------------------
 
 function createToken(user) {
   return jwt.sign(
     {
       id: user.id,
-      username: user.username,
+      nickname: user.nickname,
       role: user.role
     },
-    SECRET,
-    { expiresIn: "30d" }
+    JWT_SECRET,
+    {
+      expiresIn: "30d"
+    }
   );
 }
 
-function auth(req, res, next) {
-  const header = req.headers.authorization;
+function getUserById(id) {
+  return db
+    .prepare(
+      `
+      SELECT
+        id,
+        name,
+        nickname,
+        email,
+        role,
+        avatar,
+        about,
+        xp,
+        level,
+        penalties,
+        status,
+        created_at
+      FROM users
+      WHERE id = ?
+    `
+    )
+    .get(id);
+}
 
-  if (!header || !header.startsWith("Bearer ")) {
+function calculateLevel(xp) {
+  if (xp >= 2000) return "Legend";
+  if (xp >= 1200) return "Pro";
+  if (xp >= 600) return "Creator";
+  return "Rookie";
+}
+
+function authRequired(req, res, next) {
+  const header = req.headers.authorization || "";
+
+  if (!header.startsWith("Bearer ")) {
     return res.status(401).json({
       ok: false,
       error: "Требуется авторизация"
     });
   }
 
-  const token = header.replace("Bearer ", "");
+  const token = header.slice(7);
 
   try {
-    req.user = jwt.verify(token, SECRET);
+    const payload = jwt.verify(token, JWT_SECRET);
+    const user = getUserById(payload.id);
+
+    if (!user) {
+      return res.status(401).json({
+        ok: false,
+        error: "Пользователь не найден"
+      });
+    }
+
+    if (user.status !== "active") {
+      return res.status(403).json({
+        ok: false,
+        error: "Аккаунт заблокирован"
+      });
+    }
+
+    req.user = user;
     next();
-  } catch {
+  } catch (error) {
     return res.status(401).json({
       ok: false,
       error: "Недействительный токен"
@@ -113,102 +211,119 @@ function auth(req, res, next) {
   }
 }
 
-function adminOnly(req, res, next) {
-  if (req.user.role !== "admin") {
+function adminRequired(req, res, next) {
+  if (!req.user || req.user.role !== "admin") {
     return res.status(403).json({
       ok: false,
-      error: "Доступ только для администратора"
+      error: "Требуются права администратора"
     });
   }
 
   next();
 }
 
-function publicUser(user) {
-  return {
-    id: user.id,
-    username: user.username,
-    email: user.email,
-    role: user.role,
-    status: user.status,
-    xp: user.xp,
-    level: levelFromXp(user.xp),
-    strikes: user.strikes,
-    streak: user.streak,
-    created_at: user.created_at
-  };
+function today() {
+  return new Date().toISOString().slice(0, 10);
 }
 
-/* BASIC */
+// --------------------------------------------------
+// BASIC ROUTES
+// --------------------------------------------------
 
 app.get("/", (req, res) => {
   res.json({
     ok: true,
+    status: "online",
     service: "ANARHY TikTok OS",
-    status: "online"
+    version: "1.0.0"
   });
 });
 
 app.get("/api/health", (req, res) => {
   res.json({
     ok: true,
-    service: "ANARHY backend"
+    status: "online",
+    service: "ANARHY TikTok OS",
+    version: "1.0.0"
   });
 });
 
-/* AUTH */
+// --------------------------------------------------
+// AUTH
+// --------------------------------------------------
 
-app.post("/api/auth/register", async (req, res) => {
+app.post("/api/register", async (req, res) => {
   try {
-    const username = String(req.body.username || "").trim();
-    const email = String(
-      req.body.email || `${username}@anarhy.local`
-    ).trim();
-    const password = String(req.body.password || "");
+    const {
+      name,
+      nickname,
+      email,
+      password
+    } = req.body;
 
-    if (!username || !password) {
+    if (!name || !nickname || !email || !password) {
       return res.status(400).json({
         ok: false,
-        error: "Заполни username и password"
+        error: "Заполни имя, nickname, email и пароль"
       });
     }
 
     if (password.length < 6) {
       return res.status(400).json({
         ok: false,
-        error: "Пароль минимум 6 символов"
+        error: "Пароль должен содержать минимум 6 символов"
       });
     }
 
-    const exists = db
-      .prepare("SELECT id FROM users WHERE username = ? OR email = ?")
-      .get(username, email);
+    const normalizedNickname = String(nickname)
+      .trim()
+      .toLowerCase();
 
-    if (exists) {
+    const normalizedEmail = String(email)
+      .trim()
+      .toLowerCase();
+
+    const existingUser = db
+      .prepare(
+        `
+        SELECT id
+        FROM users
+        WHERE nickname = ? OR email = ?
+      `
+      )
+      .get(normalizedNickname, normalizedEmail);
+
+    if (existingUser) {
       return res.status(409).json({
         ok: false,
-        error: "Username или email уже занят"
+        error: "Такой nickname или email уже зарегистрирован"
       });
     }
 
     const passwordHash = await bcrypt.hash(password, 10);
 
     const result = db
-      .prepare(`
+      .prepare(
+        `
         INSERT INTO users
-        (username, email, password_hash)
-        VALUES (?, ?, ?)
-      `)
-      .run(username, email, passwordHash);
+        (name, nickname, email, password)
+        VALUES (?, ?, ?, ?)
+      `
+      )
+      .run(
+        String(name).trim(),
+        normalizedNickname,
+        normalizedEmail,
+        passwordHash
+      );
 
-    const user = db
-      .prepare("SELECT * FROM users WHERE id = ?")
-      .get(result.lastInsertRowid);
+    const user = getUserById(result.lastInsertRowid);
+    const token = createToken(user);
 
     return res.status(201).json({
       ok: true,
-      token: createToken(user),
-      user: publicUser(user)
+      token,
+      user
     });
   } catch (error) {
     console.error("REGISTER ERROR:", error);
@@ -220,30 +335,30 @@ app.post("/api/auth/register", async (req, res) => {
   }
 });
 
-app.post("/api/auth/login", async (req, res) => {
+app.post("/api/login", async (req, res) => {
   try {
-    const login = String(
-      req.body.login ||
-      req.body.username ||
-      req.body.email ||
-      ""
-    ).trim();
+    const { email, password, nickname } = req.body;
 
-    const password = String(req.body.password || "");
+    const loginValue = String(email || nickname || "")
+      .trim()
+      .toLowerCase();
 
-    if (!login || !password) {
+    if (!loginValue || !password) {
       return res.status(400).json({
         ok: false,
-        error: "Введи логин и пароль"
+        error: "Введи email/nickname и пароль"
       });
     }
 
     const user = db
-      .prepare(`
-        SELECT * FROM users
-        WHERE username = ? OR email = ?
-      `)
-      .get(login, login);
+      .prepare(
+        `
+        SELECT *
+        FROM users
+        WHERE email = ? OR nickname = ?
+      `
+      )
+      .get(loginValue, loginValue);
 
     if (!user) {
       return res.status(401).json({
@@ -252,29 +367,25 @@ app.post("/api/auth/login", async (req, res) => {
       });
     }
 
-    const valid = await bcrypt.compare(
+    const passwordIsValid = await bcrypt.compare(
       password,
-      user.password_hash
+      user.password
     );
 
-    if (!valid) {
+    if (!passwordIsValid) {
       return res.status(401).json({
         ok: false,
         error: "Неверный логин или пароль"
       });
     }
 
-    if (user.status !== "active") {
-      return res.status(403).json({
-        ok: false,
-        error: "Аккаунт заблокирован"
-      });
-    }
+    const safeUser = getUserById(user.id);
+    const token = createToken(safeUser);
 
     return res.json({
       ok: true,
-      token: createToken(user),
-      user: publicUser(user)
+      token,
+      user: safeUser
     });
   } catch (error) {
     console.error("LOGIN ERROR:", error);
@@ -286,66 +397,143 @@ app.post("/api/auth/login", async (req, res) => {
   }
 });
 
-app.get("/api/me", auth, (req, res) => {
-  const user = db
-    .prepare("SELECT * FROM users WHERE id = ?")
-    .get(req.user.id);
-
-  if (!user) {
-    return res.status(404).json({
-      ok: false,
-      error: "Пользователь не найден"
-    });
-  }
-
-  return res.json({
+app.get("/api/me", authRequired, (req, res) => {
+  res.json({
     ok: true,
-    user: publicUser(user)
+    user: getUserById(req.user.id)
   });
 });
 
-/* TASKS */
+// --------------------------------------------------
+// PROFILE
+// --------------------------------------------------
 
-app.get("/api/tasks", auth, (req, res) => {
+app.get("/api/profile", authRequired, (req, res) => {
+  res.json({
+    ok: true,
+    user: getUserById(req.user.id)
+  });
+});
+
+app.put("/api/profile", authRequired, (req, res) => {
+  try {
+    const {
+      name,
+      nickname,
+      email,
+      avatar,
+      about
+    } = req.body;
+
+    const currentUser = getUserById(req.user.id);
+
+    const nextName =
+      name !== undefined ? String(name).trim() : currentUser.name;
+
+    const nextNickname =
+      nickname !== undefined
+        ? String(nickname).trim().toLowerCase()
+        : currentUser.nickname;
+
+    const nextEmail =
+      email !== undefined
+        ? String(email).trim().toLowerCase()
+        : currentUser.email;
+
+    const nextAvatar =
+      avatar !== undefined ? String(avatar) : currentUser.avatar;
+
+    const nextAbout =
+      about !== undefined ? String(about) : currentUser.about;
+
+    const duplicate = db
+      .prepare(
+        `
+        SELECT id
+        FROM users
+        WHERE (nickname = ? OR email = ?)
+        AND id != ?
+      `
+      )
+      .get(nextNickname, nextEmail, req.user.id);
+
+    if (duplicate) {
+      return res.status(409).json({
+        ok: false,
+        error: "Такой nickname или email уже занят"
+      });
+    }
+
+    db.prepare(
+      `
+      UPDATE users
+      SET name = ?,
+          nickname = ?,
+          email = ?,
+          avatar = ?,
+          about = ?
+      WHERE id = ?
+    `
+    ).run(
+      nextName,
+      nextNickname,
+      nextEmail,
+      nextAvatar,
+      nextAbout,
+      req.user.id
+    );
+
+    res.json({
+      ok: true,
+      user: getUserById(req.user.id)
+    });
+  } catch (error) {
+    console.error("PROFILE ERROR:", error);
+
+    res.status(500).json({
+      ok: false,
+      error: "Не удалось обновить профиль"
+    });
+  }
+});
+
+app.post("/api/profile", authRequired, (req, res) => {
+  req.url = "/api/profile";
+  return app._router.handle(req, res);
+});
+
+// --------------------------------------------------
+// TASKS
+// --------------------------------------------------
+
+app.get("/api/tasks", authRequired, (req, res) => {
   const tasks = db
-    .prepare(`
-      SELECT
-        t.*,
-        s.id AS submission_id,
-        s.status AS submission_status,
-        s.tiktok_url,
-        s.note,
-        s.admin_comment
-      FROM tasks t
-      LEFT JOIN submissions s
-        ON s.task_id = t.id
-        AND s.user_id = ?
-      WHERE t.active = 1
-      ORDER BY t.id ASC
-    `)
-    .all(req.user.id);
+    .prepare(
+      `
+      SELECT *
+      FROM tasks
+      WHERE active = 1
+      ORDER BY id ASC
+    `
+    )
+    .all();
 
-  return res.json({
+  res.json({
     ok: true,
     tasks
   });
 });
 
-app.post("/api/tasks/:id/submit", auth, (req, res) => {
-  const taskId = Number(req.params.id);
-  const tiktok_url = String(req.body.tiktok_url || "").trim();
-  const note = String(req.body.note || "");
-
-  if (!tiktok_url) {
-    return res.status(400).json({
-      ok: false,
-      error: "Нужна ссылка на TikTok"
-    });
-  }
-
+app.get("/api/tasks/:id", authRequired, (req, res) => {
   const task = db
-    .prepare("SELECT * FROM tasks WHERE id = ? AND active = 1")
-    .get(taskId);
+    .prepare(
+      `
+      SELECT *
+      FROM tasks
+      WHERE id = ?
+    `
+    )
+    .get(req.params.id);
 
   if (!task) {
     return res.status(404).json({
@@ -354,394 +542,371 @@ app.post("/api/tasks/:id/submit", auth, (req, res) => {
     });
   }
 
-  const existing = db
-    .prepare(`
-      SELECT id FROM submissions
-      WHERE task_id = ? AND user_id = ?
-    `)
-    .get(taskId, req.user.id);
-
-  if (existing) {
-    return res.status(409).json({
-      ok: false,
-      error: "Ты уже отправлял это задание"
-    });
-  }
-
-  const result = db
-    .prepare(`
-      INSERT INTO submissions
-      (task_id, user_id, tiktok_url, note)
-      VALUES (?, ?, ?, ?)
-    `)
-    .run(
-      taskId,
-      req.user.id,
-      tiktok_url,
-      note
-    );
-
-  return res.status(201).json({
+  res.json({
     ok: true,
-    submission_id: result.lastInsertRowid,
-    message: "Отчёт отправлен на проверку"
+    task
   });
 });
 
-app.get("/api/submissions/me", auth, (req, res) => {
-  const submissions = db
-    .prepare(`
+// --------------------------------------------------
+// REPORTS
+// --------------------------------------------------
+
+app.get("/api/reports", authRequired, (req, res) => {
+  const reports = db
+    .prepare(
+      `
       SELECT
-        s.*,
-        t.title AS task_title,
-        t.xp AS task_xp
-      FROM submissions s
-      JOIN tasks t ON t.id = s.task_id
-      WHERE s.user_id = ?
-      ORDER BY s.id DESC
-    `)
+        reports.*,
+        tasks.title AS task_title
+      FROM reports
+      LEFT JOIN tasks ON tasks.id = reports.task_id
+      WHERE reports.user_id = ?
+      ORDER BY reports.created_at DESC
+    `
+    )
     .all(req.user.id);
 
-  return res.json({
+  res.json({
     ok: true,
-    submissions
+    reports
   });
 });
 
-/* LEADERBOARD */
+app.post("/api/reports", authRequired, (req, res) => {
+  try {
+    const {
+      taskId,
+      task_id,
+      videoUrl,
+      video_url,
+      text
+    } = req.body;
 
-app.get("/api/leaderboard", auth, (req, res) => {
-  const users = db
-    .prepare(`
-      SELECT id, username, xp, streak, strikes
-      FROM users
-      WHERE role = 'member'
-      AND status = 'active'
-      ORDER BY xp DESC, streak DESC
-      LIMIT 100
-    `)
-    .all();
+    const selectedTaskId = taskId || task_id || null;
+    const selectedVideoUrl = videoUrl || video_url || "";
 
-  return res.json({
-    ok: true,
-    leaderboard: users.map((user, index) => ({
-      place: index + 1,
-      ...user,
-      level: levelFromXp(user.xp)
-    }))
-  });
-});
+    const task = selectedTaskId
+      ? db
+          .prepare("SELECT * FROM tasks WHERE id = ?")
+          .get(selectedTaskId)
+      : null;
 
-/* ADMIN */
+    const xpReward = task ? task.xp_reward : 40;
 
-app.get("/api/admin/stats", auth, adminOnly, (req, res) => {
-  const users = db
-    .prepare("SELECT COUNT(*) AS count FROM users")
-    .get().count;
+    const result = db
+      .prepare(
+        `
+        INSERT INTO reports
+        (user_id, task_id, video_url, text, status, xp_reward, report_date)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `
+      )
+      .run(
+        req.user.id,
+        selectedTaskId,
+        selectedVideoUrl,
+        text || "",
+        "pending",
+        xpReward,
+        today()
+      );
 
-  const tasks = db
-    .prepare("SELECT COUNT(*) AS count FROM tasks WHERE active = 1")
-    .get().count;
+    const report = db
+      .prepare("SELECT * FROM reports WHERE id = ?")
+      .get(result.lastInsertRowid);
 
-  const pending = db
-    .prepare(`
-      SELECT COUNT(*) AS count
-      FROM submissions
-      WHERE status = 'pending'
-    `)
-    .get().count;
+    res.status(201).json({
+      ok: true,
+      report
+    });
+  } catch (error) {
+    console.error("REPORT ERROR:", error);
 
-  return res.json({
-    ok: true,
-    stats: {
-      users,
-      active_tasks: tasks,
-      pending_submissions: pending
-    }
-  });
-});
-
-app.get("/api/admin/users", auth, adminOnly, (req, res) => {
-  const users = db
-    .prepare(`
-      SELECT id, username, email, role, status,
-             xp, strikes, streak, created_at
-      FROM users
-      ORDER BY id DESC
-    `)
-    .all();
-
-  return res.json({
-    ok: true,
-    users: users.map(publicUser)
-  });
-});
-
-app.post("/api/admin/tasks", auth, adminOnly, (req, res) => {
-  const title = String(req.body.title || "").trim();
-  const description = String(req.body.description || "").trim();
-  const xp = Number(req.body.xp) || 100;
-  const deadline = String(req.body.deadline || "22:00");
-
-  if (!title || !description) {
-    return res.status(400).json({
+    res.status(500).json({
       ok: false,
-      error: "Нужны title и description"
+      error: "Не удалось создать отчёт"
+    });
+  }
+});
+
+app.get("/api/reports/:id", authRequired, (req, res) => {
+  const report = db
+    .prepare(
+      `
+      SELECT *
+      FROM reports
+      WHERE id = ? AND user_id = ?
+    `
+    )
+    .get(req.params.id, req.user.id);
+
+  if (!report) {
+    return res.status(404).json({
+      ok: false,
+      error: "Отчёт не найден"
     });
   }
 
-  const result = db
-    .prepare(`
-      INSERT INTO tasks
-      (title, description, xp, deadline)
-      VALUES (?, ?, ?, ?)
-    `)
-    .run(
-      title,
-      description,
-      xp,
-      deadline
-    );
-
-  return res.status(201).json({
+  res.json({
     ok: true,
-    task_id: result.lastInsertRowid
+    report
   });
 });
 
-app.get("/api/admin/submissions", auth, adminOnly, (req, res) => {
-  const submissions = db
-    .prepare(`
+// --------------------------------------------------
+// PROGRESS
+// --------------------------------------------------
+
+app.get("/api/progress", authRequired, (req, res) => {
+  const totalReports = db
+    .prepare(
+      `
+      SELECT COUNT(*) AS count
+      FROM reports
+      WHERE user_id = ?
+    `
+    )
+    .get(req.user.id).count;
+
+  const approvedReports = db
+    .prepare(
+      `
+      SELECT COUNT(*) AS count
+      FROM reports
+      WHERE user_id = ?
+      AND status = 'approved'
+    `
+    )
+    .get(req.user.id).count;
+
+  const todayReports = db
+    .prepare(
+      `
+      SELECT COUNT(*) AS count
+      FROM reports
+      WHERE user_id = ?
+      AND report_date = ?
+    `
+    )
+    .get(req.user.id, today()).count;
+
+  res.json({
+    ok: true,
+    progress: {
+      totalReports,
+      approvedReports,
+      todayReports,
+      dailyTarget: 3,
+      deadline: "22:00",
+      testPeriodDays: 9
+    }
+  });
+});
+
+// --------------------------------------------------
+// RATING
+// --------------------------------------------------
+
+app.get("/api/rating", authRequired, (req, res) => {
+  const rating = db
+    .prepare(
+      `
       SELECT
-        s.*,
-        u.username,
-        u.email,
-        t.title AS task_title,
-        t.xp AS task_xp
-      FROM submissions s
-      JOIN users u ON u.id = s.user_id
-      JOIN tasks t ON t.id = s.task_id
-      ORDER BY
-        CASE WHEN s.status = 'pending' THEN 0 ELSE 1 END,
-        s.id DESC
-    `)
+        id,
+        name,
+        nickname,
+        avatar,
+        xp,
+        level
+      FROM users
+      WHERE status = 'active'
+      ORDER BY xp DESC, id ASC
+      LIMIT 100
+    `
+    )
     .all();
 
-  return res.json({
+  res.json({
     ok: true,
-    submissions
+    rating
   });
 });
 
-app.patch(
-  "/api/admin/submissions/:id",
-  auth,
-  adminOnly,
+// --------------------------------------------------
+// ADMIN
+// --------------------------------------------------
+
+app.get(
+  "/api/admin/users",
+  authRequired,
+  adminRequired,
   (req, res) => {
-    const submissionId = Number(req.params.id);
-    const status = req.body.status;
-    const admin_comment = String(
-      req.body.admin_comment || ""
-    );
+    const users = db
+      .prepare(
+        `
+        SELECT
+          id,
+          name,
+          nickname,
+          email,
+          role,
+          avatar,
+          about,
+          xp,
+          level,
+          penalties,
+          status,
+          created_at
+        FROM users
+        ORDER BY created_at DESC
+      `
+      )
+      .all();
 
-    if (!["approved", "rejected"].includes(status)) {
-      return res.status(400).json({
-        ok: false,
-        error: "Статус должен быть approved или rejected"
-      });
-    }
-
-    const submission = db
-      .prepare(`
-        SELECT s.*, t.xp AS task_xp
-        FROM submissions s
-        JOIN tasks t ON t.id = s.task_id
-        WHERE s.id = ?
-      `)
-      .get(submissionId);
-
-    if (!submission) {
-      return res.status(404).json({
-        ok: false,
-        error: "Отчёт не найден"
-      });
-    }
-
-    if (submission.status !== "pending") {
-      return res.status(409).json({
-        ok: false,
-        error: "Этот отчёт уже проверен"
-      });
-    }
-
-    const user = db
-      .prepare("SELECT * FROM users WHERE id = ?")
-      .get(submission.user_id);
-
-    if (!user) {
-      return res.status(404).json({
-        ok: false,
-        error: "Пользователь не найден"
-      });
-    }
-
-    const xpAward =
-      status === "approved"
-        ? submission.task_xp
-        : 0;
-
-    const strikes =
-      status === "rejected"
-        ? Math.min(user.strikes + 1, 3)
-        : user.strikes;
-
-    const updateSubmission = db.prepare(`
-      UPDATE submissions
-      SET status = ?,
-          admin_comment = ?,
-          reviewed_at = CURRENT_TIMESTAMP,
-          xp_awarded = ?
-      WHERE id = ?
-    `);
-
-    const updateUser = db.prepare(`
-      UPDATE users
-      SET xp = xp + ?,
-          strikes = ?
-      WHERE id = ?
-    `);
-
-    const transaction = db.transaction(() => {
-      updateSubmission.run(
-        status,
-        admin_comment,
-        xpAward,
-        submissionId
-      );
-
-      updateUser.run(
-        xpAward,
-        strikes,
-        submission.user_id
-      );
-    });
-
-    transaction();
-
-    return res.json({
+    res.json({
       ok: true,
-      message:
-        status === "approved"
-          ? "Отчёт одобрен, XP начислен"
-          : "Отчёт отклонён, strike начислен"
+      users
+    });
+  }
+);
+
+app.get(
+  "/api/admin/reports",
+  authRequired,
+  adminRequired,
+  (req, res) => {
+    const reports = db
+      .prepare(
+        `
+        SELECT
+          reports.*,
+          users.name,
+          users.nickname,
+          tasks.title AS task_title
+        FROM reports
+        LEFT JOIN users ON users.id = reports.user_id
+        LEFT JOIN tasks ON tasks.id = reports.task_id
+        ORDER BY reports.created_at DESC
+      `
+      )
+      .all();
+
+    res.json({
+      ok: true,
+      reports
     });
   }
 );
 
 app.patch(
-  "/api/admin/users/:id",
-  auth,
-  adminOnly,
+  "/api/admin/reports/:id",
+  authRequired,
+  adminRequired,
   (req, res) => {
-    const userId = Number(req.params.id);
-    const status = req.body.status;
-    const role = req.body.role;
+    try {
+      const { status } = req.body;
 
-    const user = db
-      .prepare("SELECT * FROM users WHERE id = ?")
-      .get(userId);
+      const allowedStatuses = [
+        "pending",
+        "approved",
+        "rejected"
+      ];
 
-    if (!user) {
-      return res.status(404).json({
+      if (!allowedStatuses.includes(status)) {
+        return res.status(400).json({
+          ok: false,
+          error: "Недопустимый статус отчёта"
+        });
+      }
+
+      const report = db
+        .prepare("SELECT * FROM reports WHERE id = ?")
+        .get(req.params.id);
+
+      if (!report) {
+        return res.status(404).json({
+          ok: false,
+          error: "Отчёт не найден"
+        });
+      }
+
+      const updateReport = db.transaction(() => {
+        db.prepare(
+          `
+          UPDATE reports
+          SET status = ?
+          WHERE id = ?
+        `
+        ).run(status, req.params.id);
+
+        if (
+          status === "approved" &&
+          report.status !== "approved"
+        ) {
+          const user = getUserById(report.user_id);
+          const newXp = user.xp + report.xp_reward;
+          const newLevel = calculateLevel(newXp);
+
+          db.prepare(
+            `
+            UPDATE users
+            SET xp = ?,
+                level = ?
+            WHERE id = ?
+          `
+          ).run(newXp, newLevel, report.user_id);
+        }
+      });
+
+      updateReport();
+
+      const updatedReport = db
+        .prepare("SELECT * FROM reports WHERE id = ?")
+        .get(req.params.id);
+
+      res.json({
+        ok: true,
+        report: updatedReport
+      });
+    } catch (error) {
+      console.error("ADMIN REPORT ERROR:", error);
+
+      res.status(500).json({
         ok: false,
-        error: "Пользователь не найден"
+        error: "Не удалось обновить отчёт"
       });
     }
-
-    if (
-      status &&
-      !["active", "blocked", "pending"].includes(status)
-    ) {
-      return res.status(400).json({
-        ok: false,
-        error: "Недопустимый статус"
-      });
-    }
-
-    if (
-      role &&
-      !["member", "admin"].includes(role)
-    ) {
-      return res.status(400).json({
-        ok: false,
-        error: "Недопустимая роль"
-      });
-    }
-
-    db.prepare(`
-      UPDATE users
-      SET status = COALESCE(?, status),
-          role = COALESCE(?, role)
-      WHERE id = ?
-    `).run(
-      status || null,
-      role || null,
-      userId
-    );
-
-    return res.json({
-      ok: true,
-      message: "Пользователь обновлён"
-    });
   }
 );
 
-/* BOOTSTRAP ADMIN */
+// --------------------------------------------------
+// ERROR HANDLERS
+// --------------------------------------------------
 
-async function ensureAdmin() {
-  const adminUsername = process.env.ADMIN_USERNAME;
-  const adminPassword = process.env.ADMIN_PASSWORD;
-
-  if (!adminUsername || !adminPassword) {
-    console.log(
-      "ADMIN_USERNAME / ADMIN_PASSWORD не заданы"
-    );
-    return;
-  }
-
-  const existing = db
-    .prepare("SELECT id FROM users WHERE username = ?")
-    .get(adminUsername);
-
-  if (!existing) {
-    const passwordHash = await bcrypt.hash(
-      adminPassword,
-      10
-    );
-
-    db.prepare(`
-      INSERT INTO users
-      (username, email, password_hash, role)
-      VALUES (?, ?, ?, 'admin')
-    `).run(
-      adminUsername,
-      `${adminUsername}@anarhy.local`,
-      passwordHash
-    );
-
-    console.log("Admin account created");
-  }
-}
-
-ensureAdmin()
-  .then(() => {
-    app.listen(PORT, "0.0.0.0", () => {
-      console.log(
-        `ANARHY TikTok OS running on port ${PORT}`
-      );
-    });
-  })
-  .catch((error) => {
-    console.error("Startup error:", error);
-    process.exit(1);
+app.use((req, res) => {
+  res.status(404).json({
+    ok: false,
+    error: "Маршрут не найден",
+    path: req.originalUrl
   });
+});
+
+app.use((error, req, res, next) => {
+  console.error("SERVER ERROR:", error);
+
+  res.status(500).json({
+    ok: false,
+    error: "Внутренняя ошибка сервера"
+  });
+});
+
+// --------------------------------------------------
+// START SERVER
+// --------------------------------------------------
+
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(
+    `ANARHY backend running on port ${PORT}`
+  );
+});
