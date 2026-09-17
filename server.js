@@ -4,31 +4,39 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const Database = require("better-sqlite3");
 
+// ==================================================
+// CONFIG
+// ==================================================
+
 const app = express();
 
 const PORT = process.env.PORT || 10000;
-const JWT_SECRET =
-  process.env.JWT_SECRET || "anarhy-development-secret-change-later";
 
-const FRONTEND_URL =
-  process.env.FRONTEND_URL || "https://anarhytiktok9.netlify.app";
+const JWT_SECRET =
+  process.env.JWT_SECRET || "anarhy-super-secret-change-this-later";
+
+const ADMIN_EMAIL =
+  process.env.ADMIN_EMAIL || "admin@anarhy.ru";
+
+const DB_FILE = "anarhy.sqlite";
+
+const db = new Database(DB_FILE);
+
+db.pragma("journal_mode = WAL");
+db.pragma("foreign_keys = ON");
 
 app.use(
   cors({
     origin: true,
-    credentials: true
+    credentials: false
   })
 );
 
 app.use(express.json({ limit: "2mb" }));
 
-// --------------------------------------------------
+// ==================================================
 // DATABASE
-// --------------------------------------------------
-
-const db = new Database("anarhy.sqlite");
-
-db.pragma("journal_mode = WAL");
+// ==================================================
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS users (
@@ -53,7 +61,7 @@ db.exec(`
     description TEXT DEFAULT '',
     videos_required INTEGER NOT NULL DEFAULT 3,
     deadline TEXT NOT NULL DEFAULT '22:00',
-    xp_reward INTEGER NOT NULL DEFAULT 120,
+    xp_reward INTEGER NOT NULL DEFAULT 40,
     active INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   );
@@ -61,89 +69,163 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS reports (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL,
-    task_id INTEGER,
-    video_url TEXT DEFAULT '',
+    task_id INTEGER NOT NULL,
+    video_url TEXT NOT NULL,
     text TEXT DEFAULT '',
     status TEXT NOT NULL DEFAULT 'pending',
     xp_reward INTEGER NOT NULL DEFAULT 40,
     report_date TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (user_id) REFERENCES users(id),
-    FOREIGN KEY (task_id) REFERENCES tasks(id)
+    xp_awarded INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
+  );
+
+  CREATE TABLE IF NOT EXISTS penalties (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    reason TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
   );
 `);
 
-// --------------------------------------------------
-// DEFAULT DATA
-// --------------------------------------------------
+// ==================================================
+// MIGRATIONS FOR OLD DATABASE
+// ==================================================
+
+function addColumnIfMissing(table, column, definition) {
+  const columns = db
+    .prepare(`PRAGMA table_info(${table})`)
+    .all()
+    .map((item) => item.name);
+
+  if (!columns.includes(column)) {
+    db.exec(
+      `ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`
+    );
+  }
+}
+
+addColumnIfMissing("users", "avatar", "TEXT DEFAULT ''");
+addColumnIfMissing("users", "about", "TEXT DEFAULT ''");
+addColumnIfMissing("users", "xp", "INTEGER NOT NULL DEFAULT 0");
+addColumnIfMissing("users", "level", "TEXT NOT NULL DEFAULT 'Rookie'");
+addColumnIfMissing("users", "penalties", "INTEGER NOT NULL DEFAULT 0");
+addColumnIfMissing("users", "status", "TEXT NOT NULL DEFAULT 'active'");
+addColumnIfMissing(
+  "users",
+  "created_at",
+  "TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP"
+);
+
+addColumnIfMissing(
+  "reports",
+  "xp_awarded",
+  "INTEGER NOT NULL DEFAULT 0"
+);
+
+// ==================================================
+// DEFAULT ADMIN
+// ==================================================
+
+const adminExists = db
+  .prepare("SELECT id FROM users WHERE email = ?")
+  .get(ADMIN_EMAIL);
+
+if (!adminExists) {
+  const passwordHash = bcrypt.hashSync(
+    process.env.ADMIN_PASSWORD || "ChangeMe123!",
+    12
+  );
+
+  db.prepare(`
+    INSERT INTO users
+      (name, nickname, email, password, role, status)
+    VALUES
+      (?, ?, ?, ?, 'admin', 'active')
+  `).run(
+    "ANARHY Admin",
+    "admin",
+    ADMIN_EMAIL,
+    passwordHash
+  );
+
+  console.log("Admin account created:");
+  console.log("Email:", ADMIN_EMAIL);
+  console.log(
+    "Password:",
+    process.env.ADMIN_PASSWORD || "ChangeMe123!"
+  );
+}
+
+// ==================================================
+// DEFAULT TASKS
+// ==================================================
 
 const taskCount = db
   .prepare("SELECT COUNT(*) AS count FROM tasks")
   .get().count;
 
 if (taskCount === 0) {
-  db.prepare(`
+  const insertTask = db.prepare(`
     INSERT INTO tasks
-    (title, description, videos_required, deadline, xp_reward, active)
-    VALUES (?, ?, ?, ?, ?, ?)
-  `).run(
+      (title, description, videos_required, deadline, xp_reward, active)
+    VALUES
+      (?, ?, ?, ?, ?, 1)
+  `);
+
+  insertTask.run(
     "Нарезка #01",
-    "Опубликуй TikTok-ролик и отправь ссылку на опубликованное видео.",
+    "Создай и опубликуй 3 TikTok-ролика по материалам проекта.",
     3,
     "22:00",
-    40,
-    1
+    40
   );
 
-  db.prepare(`
-    INSERT INTO tasks
-    (title, description, videos_required, deadline, xp_reward, active)
-    VALUES (?, ?, ?, ?, ?, ?)
-  `).run(
+  insertTask.run(
     "Нарезка #02",
-    "Подготовь второй ролик по заданию команды.",
+    "Создай и опубликуй 3 TikTok-ролика по материалам проекта.",
     3,
     "22:00",
-    40,
-    1
+    40
   );
 
-  db.prepare(`
-    INSERT INTO tasks
-    (title, description, videos_required, deadline, xp_reward, active)
-    VALUES (?, ?, ?, ?, ?, ?)
-  `).run(
+  insertTask.run(
     "Нарезка #03",
-    "Подготовь третий ролик и отправь отчёт.",
+    "Создай и опубликуй 3 TikTok-ролика по материалам проекта.",
     3,
     "22:00",
-    40,
-    1
+    40
   );
 }
 
-// --------------------------------------------------
+// ==================================================
 // HELPERS
-// --------------------------------------------------
+// ==================================================
 
-function createToken(user) {
-  return jwt.sign(
-    {
-      id: user.id,
-      nickname: user.nickname,
-      role: user.role
-    },
-    JWT_SECRET,
-    {
-      expiresIn: "30d"
-    }
-  );
+function today() {
+  const now = new Date();
+
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  const day = String(now.getDate()).padStart(2, "0");
+
+  return `${year}-${month}-${day}`;
+}
+
+function nowTime() {
+  const now = new Date();
+
+  const hours = String(now.getHours()).padStart(2, "0");
+  const minutes = String(now.getMinutes()).padStart(2, "0");
+
+  return `${hours}:${minutes}`;
 }
 
 function getUserById(id) {
   return db
-    .prepare(
-      `
+    .prepare(`
       SELECT
         id,
         name,
@@ -159,32 +241,79 @@ function getUserById(id) {
         created_at
       FROM users
       WHERE id = ?
-    `
-    )
+    `)
     .get(id);
+}
+
+function getUserByLogin(value) {
+  return db
+    .prepare(`
+      SELECT *
+      FROM users
+      WHERE LOWER(email) = LOWER(?)
+         OR LOWER(nickname) = LOWER(?)
+    `)
+    .get(value, value);
 }
 
 function calculateLevel(xp) {
   if (xp >= 2000) return "Legend";
-  if (xp >= 1200) return "Pro";
-  if (xp >= 600) return "Creator";
+  if (xp >= 1200) return "Master";
+  if (xp >= 700) return "Elite";
+  if (xp >= 350) return "Pro";
+  if (xp >= 150) return "Creator";
   return "Rookie";
 }
 
-function authRequired(req, res, next) {
-  const header = req.headers.authorization || "";
+function createToken(user) {
+  return jwt.sign(
+    {
+      id: user.id,
+      role: user.role
+    },
+    JWT_SECRET,
+    {
+      expiresIn: "30d"
+    }
+  );
+}
 
-  if (!header.startsWith("Bearer ")) {
-    return res.status(401).json({
-      ok: false,
-      error: "Требуется авторизация"
-    });
-  }
+function cleanText(value, maxLength = 5000) {
+  return String(value || "").trim().slice(0, maxLength);
+}
 
-  const token = header.slice(7);
-
+function validUrl(value) {
   try {
+    const url = new URL(value);
+
+    return (
+      url.protocol === "http:" ||
+      url.protocol === "https:"
+    );
+  } catch {
+    return false;
+  }
+}
+
+function isPastDeadline(deadline) {
+  return nowTime() > deadline;
+}
+
+function authRequired(req, res, next) {
+  try {
+    const header = req.headers.authorization || "";
+
+    if (!header.startsWith("Bearer ")) {
+      return res.status(401).json({
+        ok: false,
+        error: "Требуется авторизация"
+      });
+    }
+
+    const token = header.slice(7);
+
     const payload = jwt.verify(token, JWT_SECRET);
+
     const user = getUserById(payload.id);
 
     if (!user) {
@@ -202,11 +331,12 @@ function authRequired(req, res, next) {
     }
 
     req.user = user;
+
     next();
   } catch (error) {
     return res.status(401).json({
       ok: false,
-      error: "Недействительный токен"
+      error: "Недействительный или просроченный токен"
     });
   }
 }
@@ -215,27 +345,41 @@ function adminRequired(req, res, next) {
   if (!req.user || req.user.role !== "admin") {
     return res.status(403).json({
       ok: false,
-      error: "Требуются права администратора"
+      error: "Доступ только для администратора"
     });
   }
 
   next();
 }
 
-function today() {
-  return new Date().toISOString().slice(0, 10);
+function reportWithDetails(reportId) {
+  return db
+    .prepare(`
+      SELECT
+        reports.*,
+        users.name AS user_name,
+        users.nickname AS user_nickname,
+        users.email AS user_email,
+        tasks.title AS task_title,
+        tasks.deadline AS task_deadline
+      FROM reports
+      LEFT JOIN users ON users.id = reports.user_id
+      LEFT JOIN tasks ON tasks.id = reports.task_id
+      WHERE reports.id = ?
+    `)
+    .get(reportId);
 }
 
-// --------------------------------------------------
-// BASIC ROUTES
-// --------------------------------------------------
+// ==================================================
+// BASIC
+// ==================================================
 
 app.get("/", (req, res) => {
   res.json({
     ok: true,
-    status: "online",
     service: "ANARHY TikTok OS",
-    version: "1.0.0"
+    version: "2.0.0",
+    status: "online"
   });
 });
 
@@ -244,121 +388,126 @@ app.get("/api/health", (req, res) => {
     ok: true,
     status: "online",
     service: "ANARHY TikTok OS",
-    version: "1.0.0"
+    version: "2.0.0",
+    time: new Date().toISOString()
   });
 });
 
-// --------------------------------------------------
+// ==================================================
 // AUTH
-// --------------------------------------------------
+// ==================================================
 
-app.post("/api/register", async (req, res) => {
+app.post("/api/register", (req, res) => {
   try {
-    const {
-      name,
-      nickname,
-      email,
-      password
-    } = req.body;
+    const name = cleanText(req.body.name, 100);
+    const nickname = cleanText(req.body.nickname, 50)
+      .replace(/^@/, "")
+      .toLowerCase();
+
+    const email = cleanText(req.body.email, 150).toLowerCase();
+    const password = String(req.body.password || "");
 
     if (!name || !nickname || !email || !password) {
       return res.status(400).json({
         ok: false,
-        error: "Заполни имя, nickname, email и пароль"
+        error: "Заполни все поля"
+      });
+    }
+
+    if (name.length < 2) {
+      return res.status(400).json({
+        ok: false,
+        error: "Имя слишком короткое"
+      });
+    }
+
+    if (nickname.length < 3) {
+      return res.status(400).json({
+        ok: false,
+        error: "Nickname должен быть минимум 3 символа"
+      });
+    }
+
+    if (!email.includes("@")) {
+      return res.status(400).json({
+        ok: false,
+        error: "Укажи корректный email"
       });
     }
 
     if (password.length < 6) {
       return res.status(400).json({
         ok: false,
-        error: "Пароль должен содержать минимум 6 символов"
+        error: "Пароль должен быть минимум 6 символов"
       });
     }
 
-    const normalizedNickname = String(nickname)
-      .trim()
-      .toLowerCase();
-
-    const normalizedEmail = String(email)
-      .trim()
-      .toLowerCase();
-
-    const existingUser = db
-      .prepare(
-        `
+    const duplicate = db
+      .prepare(`
         SELECT id
         FROM users
-        WHERE nickname = ? OR email = ?
-      `
-      )
-      .get(normalizedNickname, normalizedEmail);
+        WHERE LOWER(email) = LOWER(?)
+           OR LOWER(nickname) = LOWER(?)
+      `)
+      .get(email, nickname);
 
-    if (existingUser) {
+    if (duplicate) {
       return res.status(409).json({
         ok: false,
-        error: "Такой nickname или email уже зарегистрирован"
+        error: "Email или nickname уже занят"
       });
     }
 
-    const passwordHash = await bcrypt.hash(password, 10);
+    const passwordHash = bcrypt.hashSync(password, 12);
 
     const result = db
-      .prepare(
-        `
+      .prepare(`
         INSERT INTO users
-        (name, nickname, email, password)
-        VALUES (?, ?, ?, ?)
-      `
-      )
+          (name, nickname, email, password, role, status)
+        VALUES
+          (?, ?, ?, ?, 'user', 'active')
+      `)
       .run(
-        String(name).trim(),
-        normalizedNickname,
-        normalizedEmail,
+        name,
+        nickname,
+        email,
         passwordHash
       );
 
     const user = getUserById(result.lastInsertRowid);
-    const token = createToken(user);
 
-    return res.status(201).json({
+    res.status(201).json({
       ok: true,
-      token,
+      token: createToken(user),
       user
     });
   } catch (error) {
     console.error("REGISTER ERROR:", error);
 
-    return res.status(500).json({
+    res.status(500).json({
       ok: false,
-      error: "Ошибка регистрации"
+      error: "Не удалось создать аккаунт"
     });
   }
 });
 
-app.post("/api/login", async (req, res) => {
+app.post("/api/login", (req, res) => {
   try {
-    const { email, password, nickname } = req.body;
+    const value = cleanText(
+      req.body.email || req.body.nickname || req.body.login,
+      150
+    );
 
-    const loginValue = String(email || nickname || "")
-      .trim()
-      .toLowerCase();
+    const password = String(req.body.password || "");
 
-    if (!loginValue || !password) {
+    if (!value || !password) {
       return res.status(400).json({
         ok: false,
-        error: "Введи email/nickname и пароль"
+        error: "Введи логин и пароль"
       });
     }
 
-    const user = db
-      .prepare(
-        `
-        SELECT *
-        FROM users
-        WHERE email = ? OR nickname = ?
-      `
-      )
-      .get(loginValue, loginValue);
+    const user = getUserByLogin(value);
 
     if (!user) {
       return res.status(401).json({
@@ -367,35 +516,43 @@ app.post("/api/login", async (req, res) => {
       });
     }
 
-    const passwordIsValid = await bcrypt.compare(
+    const passwordCorrect = bcrypt.compareSync(
       password,
       user.password
     );
 
-    if (!passwordIsValid) {
+    if (!passwordCorrect) {
       return res.status(401).json({
         ok: false,
         error: "Неверный логин или пароль"
       });
     }
 
-    const safeUser = getUserById(user.id);
-    const token = createToken(safeUser);
+    if (user.status !== "active") {
+      return res.status(403).json({
+        ok: false,
+        error: "Аккаунт заблокирован"
+      });
+    }
 
-    return res.json({
+    res.json({
       ok: true,
-      token,
-      user: safeUser
+      token: createToken(user),
+      user: getUserById(user.id)
     });
   } catch (error) {
     console.error("LOGIN ERROR:", error);
 
-    return res.status(500).json({
+    res.status(500).json({
       ok: false,
       error: "Ошибка входа"
     });
   }
 });
+
+// ==================================================
+// CURRENT USER
+// ==================================================
 
 app.get("/api/me", authRequired, (req, res) => {
   res.json({
@@ -404,9 +561,9 @@ app.get("/api/me", authRequired, (req, res) => {
   });
 });
 
-// --------------------------------------------------
+// ==================================================
 // PROFILE
-// --------------------------------------------------
+// ==================================================
 
 app.get("/api/profile", authRequired, (req, res) => {
   res.json({
@@ -417,69 +574,60 @@ app.get("/api/profile", authRequired, (req, res) => {
 
 app.put("/api/profile", authRequired, (req, res) => {
   try {
-    const {
-      name,
-      nickname,
-      email,
-      avatar,
-      about
-    } = req.body;
+    const name = cleanText(req.body.name, 100);
+    const nickname = cleanText(req.body.nickname, 50)
+      .replace(/^@/, "")
+      .toLowerCase();
 
-    const currentUser = getUserById(req.user.id);
+    const email = cleanText(req.body.email, 150).toLowerCase();
+    const avatar = cleanText(req.body.avatar, 1000);
+    const about = cleanText(req.body.about, 2000);
 
-    const nextName =
-      name !== undefined ? String(name).trim() : currentUser.name;
-
-    const nextNickname =
-      nickname !== undefined
-        ? String(nickname).trim().toLowerCase()
-        : currentUser.nickname;
-
-    const nextEmail =
-      email !== undefined
-        ? String(email).trim().toLowerCase()
-        : currentUser.email;
-
-    const nextAvatar =
-      avatar !== undefined ? String(avatar) : currentUser.avatar;
-
-    const nextAbout =
-      about !== undefined ? String(about) : currentUser.about;
+    if (!name || !nickname || !email) {
+      return res.status(400).json({
+        ok: false,
+        error: "Имя, nickname и email обязательны"
+      });
+    }
 
     const duplicate = db
-      .prepare(
-        `
+      .prepare(`
         SELECT id
         FROM users
-        WHERE (nickname = ? OR email = ?)
-        AND id != ?
-      `
-      )
-      .get(nextNickname, nextEmail, req.user.id);
+        WHERE id != ?
+          AND (
+            LOWER(email) = LOWER(?)
+            OR LOWER(nickname) = LOWER(?)
+          )
+      `)
+      .get(
+        req.user.id,
+        email,
+        nickname
+      );
 
     if (duplicate) {
       return res.status(409).json({
         ok: false,
-        error: "Такой nickname или email уже занят"
+        error: "Email или nickname уже используется"
       });
     }
 
-    db.prepare(
-      `
+    db.prepare(`
       UPDATE users
-      SET name = ?,
-          nickname = ?,
-          email = ?,
-          avatar = ?,
-          about = ?
+      SET
+        name = ?,
+        nickname = ?,
+        email = ?,
+        avatar = ?,
+        about = ?
       WHERE id = ?
-    `
-    ).run(
-      nextName,
-      nextNickname,
-      nextEmail,
-      nextAvatar,
-      nextAbout,
+    `).run(
+      name,
+      nickname,
+      email,
+      avatar,
+      about,
       req.user.id
     );
 
@@ -488,34 +636,35 @@ app.put("/api/profile", authRequired, (req, res) => {
       user: getUserById(req.user.id)
     });
   } catch (error) {
-    console.error("PROFILE ERROR:", error);
+    console.error("PROFILE UPDATE ERROR:", error);
 
     res.status(500).json({
       ok: false,
-      error: "Не удалось обновить профиль"
+      error: "Не удалось сохранить профиль"
     });
   }
 });
 
 app.post("/api/profile", authRequired, (req, res) => {
-  req.url = "/api/profile";
-  return app._router.handle(req, res);
+  req.method = "PUT";
+  return res.status(405).json({
+    ok: false,
+    error: "Используй PUT /api/profile"
+  });
 });
 
-// --------------------------------------------------
+// ==================================================
 // TASKS
-// --------------------------------------------------
+// ==================================================
 
 app.get("/api/tasks", authRequired, (req, res) => {
   const tasks = db
-    .prepare(
-      `
+    .prepare(`
       SELECT *
       FROM tasks
       WHERE active = 1
       ORDER BY id ASC
-    `
-    )
+    `)
     .all();
 
   res.json({
@@ -526,13 +675,11 @@ app.get("/api/tasks", authRequired, (req, res) => {
 
 app.get("/api/tasks/:id", authRequired, (req, res) => {
   const task = db
-    .prepare(
-      `
+    .prepare(`
       SELECT *
       FROM tasks
       WHERE id = ?
-    `
-    )
+    `)
     .get(req.params.id);
 
   if (!task) {
@@ -548,23 +695,22 @@ app.get("/api/tasks/:id", authRequired, (req, res) => {
   });
 });
 
-// --------------------------------------------------
+// ==================================================
 // REPORTS
-// --------------------------------------------------
+// ==================================================
 
 app.get("/api/reports", authRequired, (req, res) => {
   const reports = db
-    .prepare(
-      `
+    .prepare(`
       SELECT
         reports.*,
-        tasks.title AS task_title
+        tasks.title AS task_title,
+        tasks.deadline AS task_deadline
       FROM reports
       LEFT JOIN tasks ON tasks.id = reports.task_id
       WHERE reports.user_id = ?
       ORDER BY reports.created_at DESC
-    `
-    )
+    `)
     .all(req.user.id);
 
   res.json({
@@ -575,76 +721,119 @@ app.get("/api/reports", authRequired, (req, res) => {
 
 app.post("/api/reports", authRequired, (req, res) => {
   try {
-    const {
-      taskId,
-      task_id,
-      videoUrl,
-      video_url,
-      text
-    } = req.body;
+    const taskId = Number(req.body.taskId);
+    const videoUrl = cleanText(req.body.videoUrl, 2000);
+    const text = cleanText(req.body.text, 3000);
 
-    const selectedTaskId = taskId || task_id || null;
-    const selectedVideoUrl = videoUrl || video_url || "";
+    if (!taskId || !videoUrl) {
+      return res.status(400).json({
+        ok: false,
+        error: "Укажи задание и ссылку на ролик"
+      });
+    }
 
-    const task = selectedTaskId
-      ? db
-          .prepare("SELECT * FROM tasks WHERE id = ?")
-          .get(selectedTaskId)
-      : null;
+    if (!validUrl(videoUrl)) {
+      return res.status(400).json({
+        ok: false,
+        error: "Укажи корректную ссылку"
+      });
+    }
 
-    const xpReward = task ? task.xp_reward : 40;
+    const task = db
+      .prepare(`
+        SELECT *
+        FROM tasks
+        WHERE id = ?
+          AND active = 1
+      `)
+      .get(taskId);
 
-    const result = db
-      .prepare(
-        `
-        INSERT INTO reports
-        (user_id, task_id, video_url, text, status, xp_reward, report_date)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-      `
-      )
-      .run(
+    if (!task) {
+      return res.status(404).json({
+        ok: false,
+        error: "Активное задание не найдено"
+      });
+    }
+
+    const existingReport = db
+      .prepare(`
+        SELECT id
+        FROM reports
+        WHERE user_id = ?
+          AND task_id = ?
+          AND report_date = ?
+          AND status != 'rejected'
+      `)
+      .get(
         req.user.id,
-        selectedTaskId,
-        selectedVideoUrl,
-        text || "",
-        "pending",
-        xpReward,
+        taskId,
         today()
       );
 
-    const report = db
-      .prepare("SELECT * FROM reports WHERE id = ?")
-      .get(result.lastInsertRowid);
+    if (existingReport) {
+      return res.status(409).json({
+        ok: false,
+        error: "Ты уже отправлял отчёт по этому заданию сегодня"
+      });
+    }
+
+    const result = db
+      .prepare(`
+        INSERT INTO reports
+          (
+            user_id,
+            task_id,
+            video_url,
+            text,
+            status,
+            xp_reward,
+            report_date,
+            xp_awarded
+          )
+        VALUES
+          (?, ?, ?, ?, 'pending', ?, ?, 0)
+      `)
+      .run(
+        req.user.id,
+        taskId,
+        videoUrl,
+        text,
+        task.xp_reward,
+        today()
+      );
 
     res.status(201).json({
       ok: true,
-      report
+      message: "Отчёт отправлен на проверку",
+      report: reportWithDetails(result.lastInsertRowid)
     });
   } catch (error) {
-    console.error("REPORT ERROR:", error);
+    console.error("REPORT CREATE ERROR:", error);
 
     res.status(500).json({
       ok: false,
-      error: "Не удалось создать отчёт"
+      error: "Не удалось отправить отчёт"
     });
   }
 });
 
 app.get("/api/reports/:id", authRequired, (req, res) => {
-  const report = db
-    .prepare(
-      `
-      SELECT *
-      FROM reports
-      WHERE id = ? AND user_id = ?
-    `
-    )
-    .get(req.params.id, req.user.id);
+  const report = reportWithDetails(req.params.id);
 
   if (!report) {
     return res.status(404).json({
       ok: false,
       error: "Отчёт не найден"
+    });
+  }
+
+  if (
+    report.user_id !== req.user.id &&
+    req.user.role !== "admin"
+  ) {
+    return res.status(403).json({
+      ok: false,
+      error: "Нет доступа к этому отчёту"
     });
   }
 
@@ -654,42 +843,58 @@ app.get("/api/reports/:id", authRequired, (req, res) => {
   });
 });
 
-// --------------------------------------------------
+// ==================================================
 // PROGRESS
-// --------------------------------------------------
+// ==================================================
 
 app.get("/api/progress", authRequired, (req, res) => {
   const totalReports = db
-    .prepare(
-      `
+    .prepare(`
       SELECT COUNT(*) AS count
       FROM reports
       WHERE user_id = ?
-    `
-    )
+    `)
     .get(req.user.id).count;
 
   const approvedReports = db
-    .prepare(
-      `
+    .prepare(`
       SELECT COUNT(*) AS count
       FROM reports
       WHERE user_id = ?
-      AND status = 'approved'
-    `
-    )
+        AND status = 'approved'
+    `)
     .get(req.user.id).count;
 
   const todayReports = db
-    .prepare(
-      `
+    .prepare(`
       SELECT COUNT(*) AS count
       FROM reports
       WHERE user_id = ?
-      AND report_date = ?
-    `
-    )
-    .get(req.user.id, today()).count;
+        AND report_date = ?
+        AND status != 'rejected'
+    `)
+    .get(
+      req.user.id,
+      today()
+    ).count;
+
+  const pendingReports = db
+    .prepare(`
+      SELECT COUNT(*) AS count
+      FROM reports
+      WHERE user_id = ?
+        AND status = 'pending'
+    `)
+    .get(req.user.id).count;
+
+  const rejectedReports = db
+    .prepare(`
+      SELECT COUNT(*) AS count
+      FROM reports
+      WHERE user_id = ?
+        AND status = 'rejected'
+    `)
+    .get(req.user.id).count;
 
   res.json({
     ok: true,
@@ -697,34 +902,35 @@ app.get("/api/progress", authRequired, (req, res) => {
       totalReports,
       approvedReports,
       todayReports,
-      dailyTarget: 3,
-      deadline: "22:00",
-      testPeriodDays: 9
+      pendingReports,
+      rejectedReports,
+      targetPerDay: 3,
+      deadline: "22:00"
     }
   });
 });
 
-// --------------------------------------------------
+// ==================================================
 // RATING
-// --------------------------------------------------
+// ==================================================
 
 app.get("/api/rating", authRequired, (req, res) => {
   const rating = db
-    .prepare(
-      `
+    .prepare(`
       SELECT
         id,
         name,
         nickname,
         avatar,
         xp,
-        level
+        level,
+        penalties,
+        status
       FROM users
-      WHERE status = 'active'
+      WHERE role = 'user'
+        AND status = 'active'
       ORDER BY xp DESC, id ASC
-      LIMIT 100
-    `
-    )
+    `)
     .all();
 
   res.json({
@@ -733,9 +939,110 @@ app.get("/api/rating", authRequired, (req, res) => {
   });
 });
 
-// --------------------------------------------------
-// ADMIN
-// --------------------------------------------------
+// ==================================================
+// USER PENALTIES
+// ==================================================
+
+app.get("/api/my-penalties", authRequired, (req, res) => {
+  const penalties = db
+    .prepare(`
+      SELECT *
+      FROM penalties
+      WHERE user_id = ?
+      ORDER BY created_at DESC
+    `)
+    .all(req.user.id);
+
+  res.json({
+    ok: true,
+    penalties,
+    total: penalties.length,
+    currentPenalties: req.user.penalties
+  });
+});
+
+// ==================================================
+// ADMIN OVERVIEW
+// ==================================================
+
+app.get(
+  "/api/admin/overview",
+  authRequired,
+  adminRequired,
+  (req, res) => {
+    const users = db
+      .prepare(`
+        SELECT COUNT(*) AS count
+        FROM users
+        WHERE role = 'user'
+      `)
+      .get().count;
+
+    const activeUsers = db
+      .prepare(`
+        SELECT COUNT(*) AS count
+        FROM users
+        WHERE role = 'user'
+          AND status = 'active'
+      `)
+      .get().count;
+
+    const reports = db
+      .prepare(`
+        SELECT COUNT(*) AS count
+        FROM reports
+      `)
+      .get().count;
+
+    const pendingReports = db
+      .prepare(`
+        SELECT COUNT(*) AS count
+        FROM reports
+        WHERE status = 'pending'
+      `)
+      .get().count;
+
+    const approvedReports = db
+      .prepare(`
+        SELECT COUNT(*) AS count
+        FROM reports
+        WHERE status = 'approved'
+      `)
+      .get().count;
+
+    const rejectedReports = db
+      .prepare(`
+        SELECT COUNT(*) AS count
+        FROM reports
+        WHERE status = 'rejected'
+      `)
+      .get().count;
+
+    const penalties = db
+      .prepare(`
+        SELECT COUNT(*) AS count
+        FROM penalties
+      `)
+      .get().count;
+
+    res.json({
+      ok: true,
+      overview: {
+        users,
+        activeUsers,
+        reports,
+        pendingReports,
+        approvedReports,
+        rejectedReports,
+        penalties
+      }
+    });
+  }
+);
+
+// ==================================================
+// ADMIN USERS
+// ==================================================
 
 app.get(
   "/api/admin/users",
@@ -743,8 +1050,7 @@ app.get(
   adminRequired,
   (req, res) => {
     const users = db
-      .prepare(
-        `
+      .prepare(`
         SELECT
           id,
           name,
@@ -760,8 +1066,7 @@ app.get(
           created_at
         FROM users
         ORDER BY created_at DESC
-      `
-      )
+      `)
       .all();
 
     res.json({
@@ -772,24 +1077,119 @@ app.get(
 );
 
 app.get(
+  "/api/admin/users/:id",
+  authRequired,
+  adminRequired,
+  (req, res) => {
+    const user = getUserById(req.params.id);
+
+    if (!user) {
+      return res.status(404).json({
+        ok: false,
+        error: "Пользователь не найден"
+      });
+    }
+
+    const reports = db
+      .prepare(`
+        SELECT
+          reports.*,
+          tasks.title AS task_title
+        FROM reports
+        LEFT JOIN tasks ON tasks.id = reports.task_id
+        WHERE reports.user_id = ?
+        ORDER BY reports.created_at DESC
+      `)
+      .all(req.params.id);
+
+    const penalties = db
+      .prepare(`
+        SELECT *
+        FROM penalties
+        WHERE user_id = ?
+        ORDER BY created_at DESC
+      `)
+      .all(req.params.id);
+
+    res.json({
+      ok: true,
+      user,
+      reports,
+      penalties
+    });
+  }
+);
+
+// ==================================================
+// ADMIN USER STATUS
+// ==================================================
+
+app.patch(
+  "/api/admin/users/:id/status",
+  authRequired,
+  adminRequired,
+  (req, res) => {
+    const userId = Number(req.params.id);
+    const status = cleanText(req.body.status, 30);
+
+    if (!["active", "blocked", "paused"].includes(status)) {
+      return res.status(400).json({
+        ok: false,
+        error: "Недопустимый статус"
+      });
+    }
+
+    const user = getUserById(userId);
+
+    if (!user) {
+      return res.status(404).json({
+        ok: false,
+        error: "Пользователь не найден"
+      });
+    }
+
+    db.prepare(`
+      UPDATE users
+      SET status = ?
+      WHERE id = ?
+    `).run(status, userId);
+
+    res.json({
+      ok: true,
+      message: "Статус пользователя обновлён",
+      user: getUserById(userId)
+    });
+  }
+);
+
+// ==================================================
+// ADMIN REPORTS
+// ==================================================
+
+app.get(
   "/api/admin/reports",
   authRequired,
   adminRequired,
   (req, res) => {
     const reports = db
-      .prepare(
-        `
+      .prepare(`
         SELECT
           reports.*,
-          users.name,
-          users.nickname,
-          tasks.title AS task_title
+          users.name AS user_name,
+          users.nickname AS user_nickname,
+          users.email AS user_email,
+          tasks.title AS task_title,
+          tasks.deadline AS task_deadline
         FROM reports
         LEFT JOIN users ON users.id = reports.user_id
         LEFT JOIN tasks ON tasks.id = reports.task_id
-        ORDER BY reports.created_at DESC
-      `
-      )
+        ORDER BY
+          CASE
+            WHEN reports.status = 'pending' THEN 0
+            ELSE 1
+          END,
+          reports.created_at DESC
+      `)
       .all();
 
     res.json({
@@ -805,15 +1205,10 @@ app.patch(
   adminRequired,
   (req, res) => {
     try {
-      const { status } = req.body;
+      const reportId = Number(req.params.id);
+      const status = cleanText(req.body.status, 30);
 
-      const allowedStatuses = [
-        "pending",
-        "approved",
-        "rejected"
-      ];
-
-      if (!allowedStatuses.includes(status)) {
+      if (!["pending", "approved", "rejected"].includes(status)) {
         return res.status(400).json({
           ok: false,
           error: "Недопустимый статус отчёта"
@@ -821,8 +1216,12 @@ app.patch(
       }
 
       const report = db
-        .prepare("SELECT * FROM reports WHERE id = ?")
-        .get(req.params.id);
+        .prepare(`
+          SELECT *
+          FROM reports
+          WHERE id = ?
+        `)
+        .get(reportId);
 
       if (!report) {
         return res.status(404).json({
@@ -832,45 +1231,63 @@ app.patch(
       }
 
       const updateReport = db.transaction(() => {
-        db.prepare(
-          `
-          UPDATE reports
-          SET status = ?
-          WHERE id = ?
-        `
-        ).run(status, req.params.id);
-
         if (
           status === "approved" &&
-          report.status !== "approved"
+          report.status !== "approved" &&
+          report.xp_awarded === 0
         ) {
-          const user = getUserById(report.user_id);
+          const user = db
+            .prepare(`
+              SELECT xp
+              FROM users
+              WHERE id = ?
+            `)
+            .get(report.user_id);
+
           const newXp = user.xp + report.xp_reward;
           const newLevel = calculateLevel(newXp);
 
-          db.prepare(
-            `
+          db.prepare(`
             UPDATE users
-            SET xp = ?,
-                level = ?
+            SET
+              xp = ?,
+              level = ?
             WHERE id = ?
-          `
-          ).run(newXp, newLevel, report.user_id);
+          `).run(
+            newXp,
+            newLevel,
+            report.user_id
+          );
+
+          db.prepare(`
+            UPDATE reports
+            SET
+              status = 'approved',
+              xp_awarded = 1
+            WHERE id = ?
+          `).run(reportId);
+        } else {
+          db.prepare(`
+            UPDATE reports
+            SET status = ?
+            WHERE id = ?
+          `).run(
+            status,
+            reportId
+          );
         }
       });
 
       updateReport();
 
-      const updatedReport = db
-        .prepare("SELECT * FROM reports WHERE id = ?")
-        .get(req.params.id);
-
       res.json({
         ok: true,
-        report: updatedReport
+        message: "Статус отчёта обновлён",
+        report: reportWithDetails(reportId),
+        user: getUserById(report.user_id)
       });
     } catch (error) {
-      console.error("ADMIN REPORT ERROR:", error);
+      console.error("REPORT STATUS ERROR:", error);
 
       res.status(500).json({
         ok: false,
@@ -880,20 +1297,366 @@ app.patch(
   }
 );
 
-// --------------------------------------------------
+// ==================================================
+// ADMIN PENALTIES
+// ==================================================
+
+app.get(
+  "/api/admin/penalties",
+  authRequired,
+  adminRequired,
+  (req, res) => {
+    const penalties = db
+      .prepare(`
+        SELECT
+          penalties.*,
+          users.name,
+          users.nickname,
+          users.email
+        FROM penalties
+        LEFT JOIN users ON users.id = penalties.user_id
+        ORDER BY penalties.created_at DESC
+      `)
+      .all();
+
+    res.json({
+      ok: true,
+      penalties
+    });
+  }
+);
+
+app.post(
+  "/api/admin/penalties",
+  authRequired,
+  adminRequired,
+  (req, res) => {
+    try {
+      const userId = Number(req.body.userId);
+      const reason = cleanText(req.body.reason, 1000);
+
+      if (!userId || !reason) {
+        return res.status(400).json({
+          ok: false,
+          error: "Укажи пользователя и причину штрафа"
+        });
+      }
+
+      const user = getUserById(userId);
+
+      if (!user) {
+        return res.status(404).json({
+          ok: false,
+          error: "Пользователь не найден"
+        });
+      }
+
+      if (user.role === "admin") {
+        return res.status(400).json({
+          ok: false,
+          error: "Администратору нельзя выдавать штраф"
+        });
+      }
+
+      const result = db.transaction(() => {
+        db.prepare(`
+          INSERT INTO penalties
+            (user_id, reason)
+          VALUES
+            (?, ?)
+        `).run(
+          userId,
+          reason
+        );
+
+        const nextPenalties = user.penalties + 1;
+
+        if (nextPenalties >= 3) {
+          db.prepare(`
+            UPDATE users
+            SET
+              penalties = 0,
+              xp = 0,
+              level = 'Rookie'
+            WHERE id = ?
+          `).run(userId);
+
+          return {
+            reset: true,
+            penalties: 0
+          };
+        }
+
+        db.prepare(`
+          UPDATE users
+          SET penalties = ?
+          WHERE id = ?
+        `).run(
+          nextPenalties,
+          userId
+        );
+
+        return {
+          reset: false,
+          penalties: nextPenalties
+        };
+      })();
+
+      res.json({
+        ok: true,
+        message: result.reset
+          ? "3 штрафа — выполнен полный reset XP и уровня"
+          : "Штраф добавлен",
+        reset: result.reset,
+        penalties: result.penalties,
+        user: getUserById(userId)
+      });
+    } catch (error) {
+      console.error("PENALTY ERROR:", error);
+
+      res.status(500).json({
+        ok: false,
+        error: "Не удалось добавить штраф"
+      });
+    }
+  }
+);
+
+// ==================================================
+// ADMIN RESET USER
+// ==================================================
+
+app.post(
+  "/api/admin/users/:id/reset",
+  authRequired,
+  adminRequired,
+  (req, res) => {
+    const userId = Number(req.params.id);
+
+    const user = getUserById(userId);
+
+    if (!user) {
+      return res.status(404).json({
+        ok: false,
+        error: "Пользователь не найден"
+      });
+    }
+
+    db.prepare(`
+      UPDATE users
+      SET
+        xp = 0,
+        level = 'Rookie',
+        penalties = 0
+      WHERE id = ?
+    `).run(userId);
+
+    res.json({
+      ok: true,
+      message: "Пользователь сброшен",
+      user: getUserById(userId)
+    });
+  }
+);
+
+// ==================================================
+// ADMIN TASKS
+// ==================================================
+
+app.post(
+  "/api/admin/tasks",
+  authRequired,
+  adminRequired,
+  (req, res) => {
+    const title = cleanText(req.body.title, 200);
+    const description = cleanText(req.body.description, 2000);
+    const videosRequired = Number(req.body.videosRequired || 3);
+    const deadline = cleanText(req.body.deadline || "22:00", 10);
+    const xpReward = Number(req.body.xpReward || 40);
+
+    if (!title) {
+      return res.status(400).json({
+        ok: false,
+        error: "Название задания обязательно"
+      });
+    }
+
+    const result = db.prepare(`
+      INSERT INTO tasks
+        (
+          title,
+          description,
+          videos_required,
+          deadline,
+          xp_reward,
+          active
+        )
+      VALUES
+        (?, ?, ?, ?, ?, 1)
+    `).run(
+      title,
+      description,
+      videosRequired,
+      deadline,
+      xpReward
+    );
+
+    res.status(201).json({
+      ok: true,
+      task: db
+        .prepare("SELECT * FROM tasks WHERE id = ?")
+        .get(result.lastInsertRowid)
+    });
+  }
+);
+
+app.patch(
+  "/api/admin/tasks/:id",
+  authRequired,
+  adminRequired,
+  (req, res) => {
+    const taskId = Number(req.params.id);
+
+    const task = db
+      .prepare("SELECT * FROM tasks WHERE id = ?")
+      .get(taskId);
+
+    if (!task) {
+      return res.status(404).json({
+        ok: false,
+        error: "Задание не найдено"
+      });
+    }
+
+    const title =
+      req.body.title !== undefined
+        ? cleanText(req.body.title, 200)
+        : task.title;
+
+    const description =
+      req.body.description !== undefined
+        ? cleanText(req.body.description, 2000)
+        : task.description;
+
+    const videosRequired =
+      req.body.videosRequired !== undefined
+        ? Number(req.body.videosRequired)
+        : task.videos_required;
+
+    const deadline =
+      req.body.deadline !== undefined
+        ? cleanText(req.body.deadline, 10)
+        : task.deadline;
+
+    const xpReward =
+      req.body.xpReward !== undefined
+        ? Number(req.body.xpReward)
+        : task.xp_reward;
+
+    const active =
+      req.body.active !== undefined
+        ? Number(Boolean(req.body.active))
+        : task.active;
+
+    db.prepare(`
+      UPDATE tasks
+      SET
+        title = ?,
+        description = ?,
+        videos_required = ?,
+        deadline = ?,
+        xp_reward = ?,
+        active = ?
+      WHERE id = ?
+    `).run(
+      title,
+      description,
+      videosRequired,
+      deadline,
+      xpReward,
+      active,
+      taskId
+    );
+
+    res.json({
+      ok: true,
+      task: db
+        .prepare("SELECT * FROM tasks WHERE id = ?")
+        .get(taskId)
+    });
+  }
+);
+
+// ==================================================
+// ADMIN DEADLINES / OVERDUE
+// ==================================================
+
+app.get(
+  "/api/admin/deadlines",
+  authRequired,
+  adminRequired,
+  (req, res) => {
+    const currentDate = today();
+
+    const users = db
+      .prepare(`
+        SELECT
+          users.id,
+          users.name,
+          users.nickname,
+          users.email,
+          users.penalties,
+          tasks.id AS task_id,
+          tasks.title AS task_title,
+          tasks.deadline,
+          COUNT(reports.id) AS reports_today
+        FROM users
+        CROSS JOIN tasks
+        LEFT JOIN reports
+          ON reports.user_id = users.id
+          AND reports.task_id = tasks.id
+          AND reports.report_date = ?
+          AND reports.status != 'rejected'
+        WHERE users.role = 'user'
+          AND users.status = 'active'
+          AND tasks.active = 1
+        GROUP BY
+          users.id,
+          tasks.id
+        ORDER BY users.id ASC, tasks.id ASC
+      `)
+      .all(currentDate);
+
+    const overdue = users.filter((item) => {
+      return (
+        isPastDeadline(item.deadline) &&
+        Number(item.reports_today) === 0
+      );
+    });
+
+    res.json({
+      ok: true,
+      date: currentDate,
+      time: nowTime(),
+      all: users,
+      overdue
+    });
+  }
+);
+
+// ==================================================
 // ERROR HANDLERS
-// --------------------------------------------------
+// ==================================================
 
 app.use((req, res) => {
   res.status(404).json({
     ok: false,
-    error: "Маршрут не найден",
-    path: req.originalUrl
+    error: "Маршрут не найден"
   });
 });
 
 app.use((error, req, res, next) => {
-  console.error("SERVER ERROR:", error);
+  console.error("GLOBAL ERROR:", error);
 
   res.status(500).json({
     ok: false,
@@ -901,12 +1664,15 @@ app.use((error, req, res, next) => {
   });
 });
 
-// --------------------------------------------------
-// START SERVER
-// --------------------------------------------------
+// ==================================================
+// START
+// ==================================================
 
 app.listen(PORT, "0.0.0.0", () => {
-  console.log(
-    `ANARHY backend running on port ${PORT}`
-  );
+  console.log("======================================");
+  console.log("ANARHY TikTok OS backend started");
+  console.log("Port:", PORT);
+  console.log("Version: 2.0.0");
+  console.log("Database:", DB_FILE);
+  console.log("======================================");
 });
